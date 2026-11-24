@@ -1,7 +1,7 @@
-# 🛡️ ConfigGuard OS — Autonomous Pre-Flight Configuration Validator
+# ⚡ ConfigGuard — Enterprise AI Infrastructure & Uptime Engine
 
-> **Preventing Cloud Outages & Ensuring 1,000 to 5,000 User Concurrency Scaling Before Code Hits Production.**  
-> *Built on Google Site Reliability Engineering (SRE) Outage Prevention Principles.*
+> **Inspect Any Web Application or Endpoint for Production Outage & Scaling Bottlenecks.**  
+> *Real-time endpoint latency profiling, SSL handshake verification, HTTP security posture, and 1,000 to 5,000 concurrent user scaling stress-test analysis.*
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -9,40 +9,17 @@
 
 ---
 
-## 📌 1. The Real-World Problem
-According to the **Google Site Reliability Engineering (SRE) Book** and post-mortems from **Amazon AWS** and **Microsoft**:
-> **"Over 70% of major production outages are caused by configuration changes, not code bugs."**
+## 📌 1. Overview
+ConfigGuard is a high-performance site reliability and security audit gate designed for modern cloud applications. Users simply enter an application URL (e.g., `https://velsuniversity.com`, `https://gnani.ai`, or `https://github.com/kishorein25/MindBloom-ChatCampanion`), and ConfigGuard executes real-time diagnostics:
 
-While developers spend weeks writing unit tests for Python, Java, or Node.js code, **nobody tests configuration files** (`deployment.yaml`, `config.json`, `.env`). A single wrong port, missing memory boundary, or low database connection limit causes catastrophic outages under user traffic.
-
-### Recent Real-World Proof:
-* **The Global Microsoft Outlook / 365 Outage:** Caused by a faulty network router configuration update.
-* **The CrowdStrike Outage (July 2024):** Caused by a single faulty configuration channel file (Channel File 291).
-* **The Exam Result Day Collapse:** A university portal crashes when 5,000 students log in simultaneously because the configuration capped traffic at 100 connections.
+* **Live Endpoint Profiling:** Measures real DNS and TCP response latency.
+* **HTTP Security Posture:** Audits HSTS, CSP (Content-Security-Policy), X-Frame-Options, and server banner leaks.
+* **1,000 to 5,000 Concurrent User Concurrency Stress-Testing:** Simulates traffic spikes using the endpoint's live baseline response time and charts failure points.
+* **Automated Hardening Patch:** Generates production-ready Kubernetes Horizontal Pod Autoscaler (HPA) and Nginx reverse proxy configurations with 1-click download.
 
 ---
 
-## 🚀 2. What ConfigGuard Does
-
-`ConfigGuard` acts as an automated **Pre-Flight Safety Gate** for software deployments:
-
-1. **Pre-Flight Static Analysis:** Scans Kubernetes YAML, Docker, and environment configs before deployment.
-2. **Real-World Scenarios Included:**
-   - **`MindBloom-ChatCampanion`:** Audits real deployment configs from GitHub, detecting port mismatches and OOM memory leak risks.
-   - **`High-Traffic Scaling Crisis`:** Simulates traffic jumping from 1,000 to 5,000 concurrent users.
-   - **`Vels University Results Portal`:** Catches low student connection ceilings and 2-second payment timeouts.
-3. **Interactive Concurrency Stress-Testing (Plotly Engine):**
-   - Visualizes latency and error rate curves as user load climbs from 500 to 5,000 concurrent users.
-   - Proves how the un-rectified config crashes at 1,200 users, while the auto-rectified config scales smoothly.
-4. **✨ One-Click Auto-Rectification Engine:**
-   - Automatically synchronizes mismatched ports.
-   - Injects memory and CPU limits (`resources.limits`).
-   - Configures Horizontal Pod Autoscalers (HPA) to handle up to 5,000 users.
-   - Exports production-ready files with one click.
-
----
-
-## 🛠️ 3. Quickstart & Local Installation
+## 🛠️ 2. Quickstart & Local Installation
 
 ### Prerequisites
 * Python 3.9+
@@ -61,26 +38,6 @@ streamlit run app.py
 ```
 
 Open your browser at: `http://localhost:8501`
-
----
-
-## 📊 4. Architecture Workflow
-
-```
-[ Developer Writes Config / YAML / JSON ]
-                   ⬇
-    [ 🛡️ ConfigGuard Pre-Flight Safety Gate ]
-                   ⬇
-  ├── Static Rule Validator (Memory, CPU, Ports, Timeouts)
-  ├── Concurrency Stress Model (1,000 -> 5,000 Users)
-  └── Outage Risk Score Generator (0 - 100)
-                   ⬇
-  [ ❌ BLOCKED if Risk >= 80% (Outage Prevented!) ]
-                   ⬇
-  [ ✨ Auto-Rectify Engine Generates Safe Config ]
-                   ⬇
-  [ 📥 1-Click Export to Kubernetes / Cloud Production ]
-```
 
 ---
 
