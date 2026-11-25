@@ -41,6 +41,160 @@ class AuditRequest(BaseModel):
     target_users: int = 5000
 
 
+class ChatRequest(BaseModel):
+    question: str
+    audit_context: dict[str, Any] | None = None
+
+
+_PLAIN_FINDING_GUIDANCE: dict[str, tuple[str, str]] = {
+    "NET-UNREACHABLE": (
+        "The website did not open at all—it timed out or is down.",
+        "Hosting server / Domain DNS panel",
+    ),
+    "TLS-INSECURE": (
+        "The browser safety lock (HTTPS) is missing or broken, so passwords could be seen.",
+        "Cloudflare / Domain SSL settings",
+    ),
+    "TLS-EXPIRING-SOON": (
+        "The security lock certificate is about to expire soon, which will show browser warnings.",
+        "Hosting / SSL Certificate settings",
+    ),
+    "HDR-NO-HSTS": (
+        "Browsers are not forced to always open the safe HTTPS version first.",
+        "Web Server (Nginx) or Cloudflare SSL rules",
+    ),
+    "HDR-NO-CSP": (
+        "No script shield—if someone slips fake JavaScript into a form, the browser might run it.",
+        "Web Server / Reverse Proxy headers (see Patch tab)",
+    ),
+    "HDR-CLICKJACK": (
+        "Another shady website could hide your page inside an invisible frame to trick clicks.",
+        "Web Server / Reverse Proxy headers",
+    ),
+    "HDR-MIME-SNIFF": (
+        "Browsers might guess uploaded files as runnable programs instead of plain files.",
+        "Web Server / Reverse Proxy headers",
+    ),
+    "HDR-REFERRER": (
+        "When users click outside links, your internal page link details may be shared.",
+        "Web Server / Reverse Proxy headers",
+    ),
+    "INFO-RUNTIME-LEAK": (
+        "The website announces what software it runs on (e.g., Express), making it easier for hackers to look up bugs.",
+        "Backend app config (disable X-Powered-By / server tokens)",
+    ),
+    "COOKIE-WEAK-FLAGS": (
+        "The login cookie is missing extra safety locks, making session hijacking easier.",
+        "Backend login / session cookie settings",
+    ),
+    "PERF-HIGH-TTFB": (
+        "Even for 1 person, the server takes over 1 second to reply. Under heavy crowds, it will jam.",
+        "Backend database/server optimization & caching",
+    ),
+    "SEC-ENV-EXPOSURE": (
+        "A private `.env` password/API-key file is sitting publicly on GitHub for anyone to read.",
+        "GitHub repo root (.env + .gitignore)",
+    ),
+    "K8S-MUTABLE-TAG": (
+        "Deployment uses `:latest` instead of a fixed version number, so updates can break unexpectedly.",
+        "GitHub file: k8s/deployment.yaml",
+    ),
+    "SRE-NO-OOM-LIMIT": (
+        "No memory limit is set—if many users visit, the app can eat all server RAM and crash.",
+        "GitHub file: k8s/deployment.yaml (resources.limits)",
+    ),
+    "SRE-NO-PROBE": (
+        "Cloud does not check if the app finished starting before sending users to it.",
+        "GitHub file: k8s/deployment.yaml (readinessProbe)",
+    ),
+    "NET-PORT-MISMATCH": (
+        "Your app listens on one door (port) while Kubernetes knocks on a different door—causing 502 errors.",
+        "GitHub files: .env.example & k8s/deployment.yaml",
+    ),
+    "SRE-LOW-REPLICAS": (
+        "Only a small fixed number of servers are running with no auto-scaling for traffic spikes.",
+        "GitHub file: k8s/deployment.yaml (+ add HPA)",
+    ),
+    "K8S-NODEPORT-EXPOSED": (
+        "Raw server port is exposed directly instead of using a clean load balancer.",
+        "GitHub file: k8s/service.yaml",
+    ),
+}
+
+
+def _enrich_findings_plain_english(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach short, non-technical meaning and exact fix location to every finding."""
+    for f in findings:
+        code = f.get("code", "")
+        if code in _PLAIN_FINDING_GUIDANCE:
+            meaning, where = _PLAIN_FINDING_GUIDANCE[code]
+        elif code.startswith("HTTP-"):
+            meaning = "The server crashed or returned an error page instead of loading normally."
+            where = "Backend server logs & application code"
+        else:
+            meaning = f.get("root_cause", "Configuration rule failed.")
+            where = f.get("target", "Server configuration")
+        f["simple_meaning"] = meaning
+        f["where_to_fix"] = where
+    return findings
+
+
+def _build_plain_capacity_summary(safe_cap: int, points: list[dict[str, Any]], alive: bool) -> str:
+    """Summarize concurrent capacity in plain everyday English for non-technical employees."""
+    if not alive or safe_cap == 0:
+        return "Website is currently unreachable, so 0 users can access it right now."
+
+    overload_pt = next((p for p in points if p["unhardened_error_pct"] >= 20 or p["unhardened_ms"] >= 5000), None)
+    end_pt = points[-1] if points else {"users": 5000, "unhardened_error_pct": 0, "unhardened_ms": 0}
+
+    if safe_cap >= 5000 and end_pt["unhardened_error_pct"] < 5:
+        return f"Safe for ~{safe_cap:,}+ users at the same time. Even at 5,000 users, it stays responsive."
+    if overload_pt:
+        return (
+            f"Safe for ~{safe_cap:,} users at a time. Around {overload_pt['users']:,} users it starts overloading, "
+            f"and at {end_pt['users']:,} users the server slows to {round(end_pt['unhardened_ms'] / 1000, 1)}s "
+            f"and crashes/fails for ~{end_pt['unhardened_error_pct']}% of users."
+        )
+    return f"Safe for ~{safe_cap:,} users at a time before slowdown begins."
+
+
+def _simple_fallback_explainer(question: str, ctx: dict[str, Any] | None) -> str:
+    """Deterministic plain-English helper used if local Ollama is not running (e.g. cloud hosting)."""
+    if not ctx or not ctx.get("url"):
+        return "Please paste any website URL or GitHub repo in the bar above and click 'Run Audit' first. Then ask me anything!"
+
+    q = question.lower()
+    url = ctx.get("url", "this website")
+    cap_summary = ctx.get("plain_capacity_summary") or f"Safe for ~{ctx.get('safe_capacity_users', 0):,} users at a time."
+    findings = ctx.get("findings", [])
+
+    if any(w in q for w in ["user", "how many", "capacity", "5000", "5,000", "crash", "load", "time"]):
+        return f"For {url}: {cap_summary} To handle 5,000 users without crashing, apply the Auto-Scaling (HPA) patch in Tab 3."
+
+    if any(w in q for w in ["where", "fix", "location", "log", "patch"]):
+        if not findings:
+            return f"No fixes are needed right now—all checked items on {url} passed!"
+        lines = [f"Where to fix the issues found on {url}:"]
+        for i, f in enumerate(findings[:6], 1):
+            lines.append(f"{i}. {f.get('simple_meaning', f.get('title'))} -> Fix in: {f.get('where_to_fix', f.get('target'))}")
+        lines.append("You can copy or download the ready-made fix file from the 'Automated Hardening Patch' tab.")
+        return "\n".join(lines)
+
+    # Default overview in plain English
+    score = ctx.get("security", {}).get("score", "--")
+    if not findings:
+        return f"{url} scored {score}/100. {cap_summary} All inspected security checks look healthy."
+
+    lines = [
+        f"Simple summary for {url} (Score: {score}/100):",
+        f"• Crowd Limit: {cap_summary}",
+        f"• {len(findings)} thing(s) need fixing:",
+    ]
+    for i, f in enumerate(findings[:5], 1):
+        lines.append(f"  {i}) {f.get('simple_meaning', f.get('title'))} (Where: {f.get('where_to_fix', f.get('target'))})")
+    return "\n".join(lines)
+
+
 def _normalize_url(raw_url: str) -> urllib.parse.ParseResult:
     cleaned = raw_url.strip()
     if not cleaned:
@@ -848,12 +1002,19 @@ spec:
 
     full_patch = "\n".join(nginx_lines) + "\n\n" + "\n\n".join(patch_snippets)
 
+    _enrich_findings_plain_english(findings)
+
     target_users = max(1000, min(5000, payload.target_users))
     concurrency = _build_concurrency_projection(
         http_info,
         arch,
         target_users,
         has_hpa=repo_meta.get("has_hpa", False),
+    )
+    plain_cap_summary = _build_plain_capacity_summary(
+        concurrency["safe_capacity_users"],
+        concurrency["points"],
+        http_info["alive"],
     )
 
     audit_elapsed_ms = round((time.perf_counter() - t_audit_start) * 1000, 1)
@@ -886,7 +1047,68 @@ spec:
         "findings": findings,
         "github_repo": repo_meta,
         "safe_capacity_users": concurrency["safe_capacity_users"],
+        "plain_capacity_summary": plain_cap_summary,
         "saturation_reason": concurrency["saturation_reason"],
         "concurrency_projection": concurrency["points"],
         "remediation_patch": full_patch,
+    })
+
+
+@app.post("/api/chat")
+def chat_simple_explainer(payload: ChatRequest):
+    """Explain the current audit in simple everyday English using local Ollama (llama3.2:1b) with safe fallback."""
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Please enter a question.")
+
+    ctx = payload.audit_context or {}
+    if not ctx.get("url"):
+        return JSONResponse({
+            "reply": _simple_fallback_explainer(question, ctx),
+            "engine": "built-in explainer",
+        })
+
+    findings_brief = "\n".join(
+        f"- {f.get('simple_meaning', f.get('title'))} (Fix in: {f.get('where_to_fix', f.get('target'))})"
+        for f in ctx.get("findings", [])[:8]
+    ) or "None (all checks passed)."
+
+    system_prompt = (
+        "You are ConfigGuard Simple Helper. Explain website check results to a non-technical employee. "
+        "Use VERY short, clear, everyday English. Do not use hard technical words. "
+        "Be accurate using ONLY the real audit numbers below:\n"
+        f"Website: {ctx.get('url')}\n"
+        f"Status: {ctx.get('http', {}).get('status_code')}\n"
+        f"Security Score: {ctx.get('security', {}).get('score')}/100\n"
+        f"User Capacity Summary: {ctx.get('plain_capacity_summary')}\n"
+        f"Issues & Where to Fix:\n{findings_brief}"
+    )
+
+    ollama_body = {
+        "model": "llama3.2:1b",
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    }
+
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:11434/api/chat",
+            data=json.dumps(ollama_body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            answer = data.get("message", {}).get("content", "").strip()
+            if answer:
+                return JSONResponse({"reply": answer, "engine": "ollama (llama3.2:1b)"})
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "reply": _simple_fallback_explainer(question, ctx),
+        "engine": "built-in explainer",
     })

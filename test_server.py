@@ -79,3 +79,29 @@ def test_concurrency_projection_differs_between_fast_cached_and_slow_stateful_si
     pt_slow_2k = next(p for p in slow_stateful["points"] if p["users"] == 2000)
     assert pt_slow_2k["unhardened_ms"] > pt_fast_2k["unhardened_ms"]
     assert pt_slow_2k["unhardened_error_pct"] > pt_fast_2k["unhardened_error_pct"]
+
+
+def test_plain_english_enrichment_and_chat_endpoint():
+    findings = [{"code": "HDR-NO-CSP", "title": "Missing CSP", "root_cause": "None", "target": "Headers"}]
+    enriched = server._enrich_findings_plain_english(findings)
+    assert "simple_meaning" in enriched[0]
+    assert "where_to_fix" in enriched[0]
+
+    chat_res = client.post(
+        "/api/chat",
+        json={
+            "question": "How many users can use this at a time?",
+            "audit_context": {
+                "url": "https://example.com",
+                "http": {"status_code": 200},
+                "security": {"score": 60},
+                "safe_capacity_users": 500,
+                "plain_capacity_summary": "Safe for ~500 users at a time. At 5,000 users it crashes.",
+                "findings": enriched,
+            },
+        },
+    )
+    assert chat_res.status_code == 200
+    body = chat_res.json()
+    assert "reply" in body and len(body["reply"]) > 10
+    assert "engine" in body
