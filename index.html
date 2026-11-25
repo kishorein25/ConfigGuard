@@ -332,6 +332,16 @@
             <span id="scanSummaryMeta" class="font-mono">Enter a URL above to begin inspection</span>
           </div>
 
+          <!-- Architecture Fingerprint Banner -->
+          <div id="archFingerprintBanner" class="hidden glass-card p-4 rounded-xl border border-white/10 bg-white/[0.02] flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="flex items-center space-x-2 text-slate-300 font-semibold">
+              <i data-lucide="cpu" class="w-4 h-4 text-brand-400"></i>
+              <span>Detected Stack & Tail Latency:</span>
+              <span id="tailLatencyBadge" class="font-mono text-slate-400"></span>
+            </div>
+            <div id="archTagsList" class="flex flex-wrap gap-1.5 font-mono"></div>
+          </div>
+
           <!-- GitHub Config Detection Banner -->
           <div id="githubFilesBanner" class="hidden glass-card p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex flex-wrap items-center justify-between gap-2 text-xs">
             <div class="flex items-center space-x-2 text-indigo-300 font-semibold">
@@ -361,8 +371,8 @@
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
                 <h2 class="text-base font-bold text-white">Concurrency Scaling Model (1,000 to 5,000 Users)</h2>
-                <p class="text-xs text-slate-400 mt-1">
-                  Projects queue saturation and response latency from the live measured TTFB baseline under 1,000–5,000 concurrent users before vs. after ConfigGuard HPA autoscaling.
+                <p id="saturationReasonText" class="text-xs text-slate-400 mt-1">
+                  Projects queue saturation and response latency from live measured P50/P95 latency and detected architecture headers.
                 </p>
               </div>
               <div class="flex items-center space-x-3 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
@@ -378,8 +388,8 @@
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-white/5">
               <div class="p-4 rounded-xl bg-white/[0.02] border border-white/5">
-                <span class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Target Concurrency</span>
-                <div id="stressTargetUsers" class="text-2xl font-extrabold font-mono text-white mt-1">--</div>
+                <span class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Estimated Safe Capacity</span>
+                <div id="stressSafeCapVal" class="text-2xl font-extrabold font-mono text-brand-400 mt-1">--</div>
               </div>
               <div class="p-4 rounded-xl bg-red-500/5 border border-red-500/20">
                 <span class="text-[11px] uppercase tracking-wider text-red-400 font-semibold">Unhardened Projected Latency</span>
@@ -615,8 +625,20 @@
 
       // Findings & Tab counter
       document.getElementById('tabFindingsCount').textContent = data.findings.length;
-      document.getElementById('scanSummaryMeta').textContent = `Completed live check in ${data.audit_duration_ms}ms • ${data.findings.length} finding(s)`;
+      document.getElementById('scanSummaryMeta').textContent = `Completed live check in ${data.audit_duration_ms}ms • Safe Capacity: ~${data.safe_capacity_users.toLocaleString()} users`;
       document.getElementById('footerLatency').textContent = `${data.audit_duration_ms}ms`;
+
+      // Architecture Fingerprint Banner
+      const archBanner = document.getElementById('archFingerprintBanner');
+      if (data.architecture && data.architecture.tags) {
+        archBanner.classList.remove('hidden');
+        document.getElementById('tailLatencyBadge').textContent = `P50: ${data.http.p50_ms}ms | P95: ${data.http.p95_ms}ms (${data.http.jitter_ratio}x jitter)`;
+        document.getElementById('archTagsList').innerHTML = data.architecture.tags
+          .map(t => `<span class="px-2 py-0.5 rounded bg-white/5 text-slate-300 border border-white/10">${escapeHtml(t)}</span>`)
+          .join('');
+      } else {
+        archBanner.classList.add('hidden');
+      }
 
       // GitHub Banner
       const ghBanner = document.getElementById('githubFilesBanner');
@@ -685,7 +707,8 @@
       const hardened = filtered.map(pt => pt.hardened_ms);
 
       const lastPt = filtered[filtered.length - 1];
-      document.getElementById('stressTargetUsers').textContent = `${maxUsers.toLocaleString()} Users`;
+      document.getElementById('saturationReasonText').textContent = lastAuditData.saturation_reason || '';
+      document.getElementById('stressSafeCapVal').textContent = `~${lastAuditData.safe_capacity_users.toLocaleString()} Users`;
       document.getElementById('stressUnhardenedVal').textContent = `${Math.round(lastPt.unhardened_ms)} ms (${lastPt.unhardened_error_pct}% err)`;
       document.getElementById('stressHardenedVal').textContent = `${Math.round(lastPt.hardened_ms)} ms (${lastPt.active_replicas} pods)`;
 

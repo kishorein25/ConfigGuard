@@ -1,9 +1,10 @@
-"""ConfigGuard OS Backend - Real-time Infrastructure, SSL, Header & GitHub Config Auditor."""
+"""ConfigGuard OS Backend - Real-time Infrastructure, SSL, Header, Concurrency & GitHub Config Auditor."""
 
 import base64
+import concurrent.futures
 import datetime
 import json
-import os
+import math
 import socket
 import ssl
 import time
@@ -23,8 +24,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(
     title="ConfigGuard OS API",
-    version="4.2.0",
-    description="Real-time SRE endpoint telemetry, security header audit, and Kubernetes/config drift analyzer.",
+    version="4.3.0",
+    description="Real-time SRE endpoint telemetry, security header audit, Little's Law capacity modeling, and Kubernetes/config drift analyzer.",
 )
 
 app.add_middleware(
@@ -105,12 +106,12 @@ def _inspect_dns_and_tls(hostname: str, port: int, is_https: bool) -> dict[str, 
     return info
 
 
-def _fetch_http(full_url: str) -> dict[str, Any]:
-    """Perform live HTTP GET probe and capture real headers and TTFB."""
+def _single_probe(full_url: str, read_limit: int = 8192) -> dict[str, Any]:
+    """Perform a single live HTTP GET probe and return status, latency, and headers."""
     req = urllib.request.Request(
         full_url,
         headers={
-            "User-Agent": "ConfigGuard-OS-SRE-Auditor/4.2 (+https://sre.google)",
+            "User-Agent": "ConfigGuard-OS-SRE-Auditor/4.3 (+https://sre.google)",
             "Accept": "text/html,application/json,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate",
         },
@@ -120,23 +121,28 @@ def _fetch_http(full_url: str) -> dict[str, Any]:
     ctx = ssl.create_default_context()
     try:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            # Read first chunk to confirm TTFB + payload availability
-            resp.read(8192)
+            resp.read(read_limit)
             total_ms = round((time.perf_counter() - t_start) * 1000, 1)
+            raw_headers = dict(resp.headers)
+            set_cookies = resp.headers.get_all("Set-Cookie") or []
             return {
                 "alive": True,
                 "status_code": resp.getcode(),
                 "latency_ms": total_ms,
-                "headers": dict(resp.headers),
+                "headers": raw_headers,
+                "set_cookies": set_cookies,
                 "error": None,
             }
     except urllib.error.HTTPError as err:
         total_ms = round((time.perf_counter() - t_start) * 1000, 1)
+        raw_headers = dict(err.headers) if err.headers else {}
+        set_cookies = err.headers.get_all("Set-Cookie") if err.headers else []
         return {
             "alive": True,
             "status_code": err.code,
             "latency_ms": total_ms,
-            "headers": dict(err.headers) if err.headers else {},
+            "headers": raw_headers,
+            "set_cookies": set_cookies or [],
             "error": f"HTTP {err.code}: {err.reason}",
         }
     except Exception as exc:
@@ -146,15 +152,53 @@ def _fetch_http(full_url: str) -> dict[str, Any]:
             "status_code": 0,
             "latency_ms": total_ms,
             "headers": {},
+            "set_cookies": [],
             "error": str(exc),
         }
+
+
+def _fetch_http_with_micro_benchmark(full_url: str) -> dict[str, Any]:
+    """Run primary HTTP probe, then a 4-connection parallel burst to measure real warm tail latency."""
+    primary = _single_probe(full_url, read_limit=8192)
+    if not primary["alive"]:
+        primary["p50_ms"] = primary["latency_ms"]
+        primary["p95_ms"] = primary["latency_ms"]
+        primary["jitter_ratio"] = 1.0
+        return primary
+
+    latencies: list[float] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_single_probe, full_url, 2048) for _ in range(4)]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                res = fut.result()
+                if res["alive"]:
+                    latencies.append(res["latency_ms"])
+            except Exception:
+                pass
+
+    if not latencies:
+        latencies = [primary["latency_ms"]]
+
+    latencies.sort()
+    mid = len(latencies) // 2
+    p50 = latencies[mid]
+    p95 = latencies[-1]
+    min_lat = max(1.0, latencies[0])
+    jitter_ratio = round(p95 / min_lat, 2)
+
+    primary["p50_ms"] = round(p50, 1)
+    primary["p95_ms"] = round(p95, 1)
+    primary["jitter_ratio"] = jitter_ratio
+    primary["sample_latencies_ms"] = latencies
+    return primary
 
 
 def _github_get_json(api_url: str) -> Any:
     req = urllib.request.Request(
         api_url,
         headers={
-            "User-Agent": "ConfigGuard-OS-Auditor/4.2",
+            "User-Agent": "ConfigGuard-OS-Auditor/4.3",
             "Accept": "application/vnd.github.v3+json",
         },
     )
@@ -165,7 +209,7 @@ def _github_get_json(api_url: str) -> Any:
 def _audit_github_repo(parsed: urllib.parse.ParseResult) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
     """Inspect real config files in a public GitHub repository."""
     findings: list[dict[str, Any]] = []
-    repo_meta: dict[str, Any] = {"detected": False, "config_files": []}
+    repo_meta: dict[str, Any] = {"detected": False, "config_files": [], "has_hpa": False}
     patch_snippets: list[str] = []
 
     parts = [p for p in parsed.path.split("/") if p]
@@ -223,7 +267,6 @@ def _audit_github_repo(parsed: urllib.parse.ParseResult) -> tuple[list[dict[str,
         except Exception:
             pass
 
-    # Inspect k8s/ directory if present
     if "k8s" in file_names and file_names["k8s"]["type"] == "dir":
         try:
             k8s_items = _github_get_json(file_names["k8s"]["url"])
@@ -237,7 +280,9 @@ def _audit_github_repo(parsed: urllib.parse.ParseResult) -> tuple[list[dict[str,
                         if not isinstance(doc, dict):
                             continue
                         kind = doc.get("kind", "")
-                        if kind == "Deployment":
+                        if kind == "HorizontalPodAutoscaler":
+                            repo_meta["has_hpa"] = True
+                        elif kind == "Deployment":
                             spec = doc.get("spec", {})
                             replicas = spec.get("replicas", 1)
                             containers = spec.get("template", {}).get("spec", {}).get("containers", [])
@@ -358,25 +403,140 @@ spec:
     return findings, repo_meta, patch_snippets
 
 
-def _build_concurrency_projection(base_ms: float, max_users: int, has_hpa: bool) -> list[dict[str, Any]]:
-    """Model latency and failure risk across 500 -> max_users using queueing theory from real measured TTFB."""
-    safe_base = max(25.0, min(base_ms if base_ms > 0 else 180.0, 2000.0))
-    points = []
-    step = 500
-    for users in range(500, max_users + 1, step):
-        # Single-instance / unhardened saturation knee around 1,500 concurrents
-        load_factor = users / 1500.0
-        if load_factor < 1.0:
-            unhardened_ms = round(safe_base * (1.0 + 0.55 * (load_factor ** 2)), 1)
-            err_pct = round(max(0.0, (load_factor - 0.6) * 8.0), 1)
-        else:
-            unhardened_ms = round(min(15000.0, safe_base * (1.55 + 4.5 * ((load_factor - 0.85) ** 2.2))), 1)
-            err_pct = round(min(94.0, 6.0 + (load_factor - 1.0) * 38.0), 1)
+def _fingerprint_architecture(headers_lower: dict[str, str], set_cookies: list[str], http_info: dict[str, Any]) -> dict[str, Any]:
+    """Extract real infrastructure signals from response headers to parameterize capacity modeling."""
+    server_val = headers_lower.get("server", "").lower()
+    cf_cache = headers_lower.get("cf-cache-status", "").upper()
+    x_cache = headers_lower.get("x-cache", "").lower()
+    via_val = headers_lower.get("via", "").lower()
+    alt_svc = headers_lower.get("alt-svc", "").lower()
+    encoding = headers_lower.get("content-encoding", "").lower()
+    conn_val = headers_lower.get("connection", "").lower()
+    powered_by = headers_lower.get("x-powered-by", "")
+    cookie_blob = " ".join(set_cookies).upper()
 
-        # Hardened with HPA (4 -> 16 pods) + connection pooling keeps utilization under ~65%
-        replicas = min(16, max(4, (users // 350) + 2))
-        hardened_ms = round(safe_base * (1.0 + (users / (replicas * 1200.0)) * 0.45), 1)
-        hardened_err = 0.0 if users <= 5000 else 0.2
+    has_cdn = any(k in server_val for k in ["cloudflare", "fastly", "cloudfront", "akamai"]) or bool(cf_cache or x_cache or "cloudfront" in via_val)
+    edge_cached = cf_cache == "HIT" or "hit" in x_cache
+    stateful_session = any(tok in cookie_blob for tok in ["JSESSIONID", "PHPSESSID", "ASP.NET_SESSIONID"])
+    uses_compression = ("gzip" in encoding) or ("br" in encoding) or ("zstd" in encoding)
+    supports_http3 = "h3=" in alt_svc
+    keep_alive_enabled = conn_val != "close"
+
+    tags = []
+    if has_cdn:
+        tags.append(f"CDN: {server_val or 'Edge'}" + (f" ({cf_cache})" if cf_cache else ""))
+    else:
+        tags.append("Direct Origin (No Edge CDN)")
+    if stateful_session:
+        tags.append("Stateful Server Session")
+    if uses_compression:
+        tags.append(f"Compressed ({encoding})")
+    if supports_http3:
+        tags.append("HTTP/3 QUIC")
+    if not keep_alive_enabled:
+        tags.append("Connection: close")
+    if powered_by:
+        tags.append(f"Origin Runtime: {powered_by}")
+    if headers_lower.get("x-render-origin-server"):
+        tags.append(f"Host: {headers_lower['x-render-origin-server']}")
+
+    return {
+        "has_cdn": has_cdn,
+        "edge_cached": edge_cached,
+        "stateful_session": stateful_session,
+        "uses_compression": uses_compression,
+        "supports_http3": supports_http3,
+        "keep_alive_enabled": keep_alive_enabled,
+        "powered_by": powered_by,
+        "tags": tags,
+    }
+
+
+def _build_concurrency_projection(
+    http_info: dict[str, Any],
+    arch: dict[str, Any],
+    max_users: int,
+    has_hpa: bool,
+) -> dict[str, Any]:
+    """
+    Compute site-specific concurrency capacity and latency curve (500 -> max_users)
+    using Little's Law throughput from measured P50/P95 latency + real header architecture signals.
+    """
+    if not http_info["alive"]:
+        return {
+            "safe_capacity_users": 0,
+            "saturation_reason": "Target endpoint did not respond to live probe (0 concurrent users supported).",
+            "points": [
+                {
+                    "users": u,
+                    "unhardened_ms": 15000.0,
+                    "hardened_ms": 15000.0,
+                    "unhardened_error_pct": 100.0,
+                    "hardened_error_pct": 100.0,
+                    "active_replicas": 0,
+                }
+                for u in range(500, max_users + 1, 500)
+            ],
+        }
+
+    p50_ms = max(20.0, float(http_info.get("p50_ms") or http_info["latency_ms"]))
+    jitter = max(1.0, float(http_info.get("jitter_ratio", 1.0)))
+
+    # Little's Law capacity estimation:
+    # Effective single-origin active worker throughput scales inversely with response time.
+    # Reference: 250ms origin response ~= ~2,000 safe concurrent browsing users (thinking time ~4s).
+    speed_factor = math.sqrt(250.0 / p50_ms)
+    base_capacity = 2000.0 * speed_factor
+
+    reasons = [f"measured P50 latency {p50_ms}ms"]
+    if arch["edge_cached"]:
+        base_capacity *= 2.4
+        reasons.append("edge cache HIT")
+    elif arch["has_cdn"]:
+        base_capacity *= 1.15
+        reasons.append("CDN edge present (dynamic origin)")
+    else:
+        base_capacity *= 0.8
+        reasons.append("no CDN edge shield")
+
+    if arch["stateful_session"]:
+        base_capacity *= 0.65
+        reasons.append("stateful server session memory lock")
+    if not arch["keep_alive_enabled"]:
+        base_capacity *= 0.82
+        reasons.append("Connection: close overhead")
+    if arch["uses_compression"]:
+        base_capacity *= 1.12
+    if arch["supports_http3"]:
+        base_capacity *= 1.1
+    if jitter > 1.6:
+        base_capacity *= max(0.6, 1.3 - (jitter - 1.6) * 0.25)
+        reasons.append(f"parallel probe tail jitter {jitter}x")
+    if has_hpa:
+        base_capacity *= 1.8
+        reasons.append("Kubernetes HPA configured")
+
+    safe_capacity = int(max(150, min(8000, round(base_capacity / 50.0) * 50)))
+
+    points = []
+    for users in range(500, max_users + 1, 500):
+        load_ratio = users / float(safe_capacity)
+        if load_ratio <= 0.85:
+            unhardened_ms = round(p50_ms * (1.0 + 0.35 * (load_ratio ** 2)), 1)
+            err_pct = 0.0
+        elif load_ratio <= 1.25:
+            unhardened_ms = round(p50_ms * (1.25 + 1.8 * ((load_ratio - 0.85) / 0.4) ** 1.6), 1)
+            err_pct = round(min(18.0, (load_ratio - 0.85) * 35.0), 1)
+        else:
+            overload = load_ratio - 1.25
+            unhardened_ms = round(min(15000.0, p50_ms * (3.05 + 4.8 * (overload ** 1.75))), 1)
+            err_pct = round(min(96.0, 14.0 + overload * 42.0), 1)
+
+        # Hardened with HPA (4 -> 16 replicas) + keep-alive connection pool + edge cache
+        replicas = min(16, max(4, math.ceil(users / 350.0)))
+        hardened_base = min(p50_ms, p50_ms * 0.55) if p50_ms > 500 else p50_ms * 0.85
+        hardened_ms = round(hardened_base * (1.0 + (users / (replicas * 1200.0)) * 0.3), 1)
+        hardened_err = 0.0 if users <= 5000 else 0.1
 
         points.append({
             "users": users,
@@ -386,7 +546,12 @@ def _build_concurrency_projection(base_ms: float, max_users: int, has_hpa: bool)
             "hardened_error_pct": hardened_err,
             "active_replicas": replicas,
         })
-    return points
+
+    return {
+        "safe_capacity_users": safe_capacity,
+        "saturation_reason": "Calculated from " + ", ".join(reasons) + ".",
+        "points": points,
+    }
 
 
 @app.get("/")
@@ -396,7 +561,7 @@ def serve_frontend():
 
 @app.get("/healthz")
 def health_check():
-    return {"status": "ok", "service": "ConfigGuard OS", "version": "4.2.0"}
+    return {"status": "ok", "service": "ConfigGuard OS", "version": "4.3.0"}
 
 
 @app.get("/api/github/{username}")
@@ -437,12 +602,14 @@ def run_live_audit(payload: AuditRequest):
     port = parsed.port or (443 if is_https else 80)
 
     net_info = _inspect_dns_and_tls(hostname, port, is_https)
-    http_info = _fetch_http(full_url)
+    http_info = _fetch_http_with_micro_benchmark(full_url)
 
     headers_lower = {k.lower(): v for k, v in http_info["headers"].items()}
+    arch = _fingerprint_architecture(headers_lower, http_info.get("set_cookies", []), http_info)
+
     findings: list[dict[str, Any]] = []
     passed_checks = 0
-    total_checks = 7
+    total_checks = 8
     score = 100
 
     # Check 1: Reachability & HTTP status
@@ -570,21 +737,40 @@ def run_live_audit(payload: AuditRequest):
             "patch_hint": 'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
         })
 
-    # Check 8: Server Version Banner Disclosure
+    # Check 8: Server / X-Powered-By Information Leakage
     server_hdr = headers_lower.get("server", "")
-    if server_hdr and any(ch.isdigit() for ch in server_hdr):
+    powered_by = headers_lower.get("x-powered-by", "")
+    if powered_by or (server_hdr and any(ch.isdigit() for ch in server_hdr)):
         score -= 5
+        exposed = f"X-Powered-By: {powered_by}" if powered_by else f"Server: {server_hdr}"
         findings.append({
             "severity": "WARNING",
-            "code": "INFO-SERVER-BANNER",
-            "title": f"Server Software Version Exposed (`{server_hdr}`)",
-            "root_cause": f"Ingress/web server disclosed version details in `Server: {server_hdr}`.",
-            "impact": "Helps automated scanners fingerprint exact software versions for known CVEs.",
-            "target": "Ingress / Reverse Proxy",
-            "patch_hint": "Set `server_tokens off;` in Nginx or strip `Server` header at edge.",
+            "code": "INFO-RUNTIME-LEAK",
+            "title": f"Backend Runtime Fingerprinting Exposed (`{exposed}`)",
+            "root_cause": f"Response disclosed backend stack details via `{exposed}`.",
+            "impact": "Helps automated scanners target stack-specific vulnerabilities and CVEs.",
+            "target": "HTTP Response Headers",
+            "patch_hint": "Disable `X-Powered-By` (e.g., `app.disable('x-powered-by')` in Express) and `server_tokens off;`.",
         })
     else:
         passed_checks += 1
+
+    # Check Cookie Security Flags if Set-Cookie is returned
+    for cookie_str in http_info.get("set_cookies", []):
+        c_lower = cookie_str.lower()
+        if is_https and ("secure" not in c_lower or "samesite" not in c_lower):
+            missing_flags = [f for f in ["Secure", "SameSite"] if f.lower() not in c_lower]
+            score -= 6
+            findings.append({
+                "severity": "HIGH",
+                "code": "COOKIE-WEAK-FLAGS",
+                "title": f"Session Cookie Missing Security Flag(s): {', '.join(missing_flags)}",
+                "root_cause": f"Cookie `{cookie_str.split(';', 1)[0].split('=')[0]}` omits `{', '.join(missing_flags)}`.",
+                "impact": "Session tokens may be exposed over HTTP downgrades or CSRF attacks.",
+                "target": "Set-Cookie Header",
+                "patch_hint": "Enforce `Secure; HttpOnly; SameSite=Lax` on all session cookies.",
+            })
+            break
 
     # Check latency SLA
     if http_info["alive"] and http_info["latency_ms"] > 1000:
@@ -594,13 +780,13 @@ def run_live_audit(payload: AuditRequest):
             "code": "PERF-HIGH-TTFB",
             "title": f"High Origin Response Latency ({http_info['latency_ms']} ms)",
             "root_cause": "Initial single-request roundtrip exceeded 1,000ms SLA threshold.",
-            "impact": "Under 1,000-5,000 concurrent users, connection queuing will rapidly exhaust worker threads.",
+            "impact": "Under high concurrency, connection queuing will rapidly exhaust origin worker threads.",
             "target": full_url,
             "patch_hint": "Enable edge caching, HTTP keep-alive pooling, and horizontal autoscaling.",
         })
 
     # GitHub Deep Repository Audit if URL points to GitHub
-    repo_meta: dict[str, Any] = {"detected": False, "config_files": []}
+    repo_meta: dict[str, Any] = {"detected": False, "config_files": [], "has_hpa": False}
     patch_snippets: list[str] = []
     if "github.com" in hostname.lower():
         gh_findings, repo_meta, patch_snippets = _audit_github_repo(parsed)
@@ -623,7 +809,6 @@ def run_live_audit(payload: AuditRequest):
     else:
         grade = "Grade F • Critical Outage Risk"
 
-    # Build real dynamic remediation patch tailored to findings
     nginx_lines = ["# Edge / Reverse Proxy Security Header Hardening"]
     if "strict-transport-security" not in headers_lower:
         nginx_lines.append('add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;')
@@ -635,6 +820,8 @@ def run_live_audit(payload: AuditRequest):
         nginx_lines.append('add_header X-Content-Type-Options "nosniff" always;')
     if "referrer-policy" not in headers_lower:
         nginx_lines.append('add_header Referrer-Policy "strict-origin-when-cross-origin" always;')
+    if powered_by:
+        nginx_lines.append("proxy_hide_header X-Powered-By;")
     nginx_lines.append("server_tokens off;")
     nginx_lines.append("keepalive_timeout 65;")
     nginx_lines.append("limit_req_zone $binary_remote_addr zone=api_burst:10m rate=100r/s;")
@@ -662,7 +849,12 @@ spec:
     full_patch = "\n".join(nginx_lines) + "\n\n" + "\n\n".join(patch_snippets)
 
     target_users = max(1000, min(5000, payload.target_users))
-    concurrency_curve = _build_concurrency_projection(http_info["latency_ms"], target_users, has_hpa=False)
+    concurrency = _build_concurrency_projection(
+        http_info,
+        arch,
+        target_users,
+        has_hpa=repo_meta.get("has_hpa", False),
+    )
 
     audit_elapsed_ms = round((time.perf_counter() - t_audit_start) * 1000, 1)
 
@@ -675,12 +867,16 @@ spec:
             "alive": http_info["alive"],
             "status_code": http_info["status_code"],
             "latency_ms": http_info["latency_ms"],
+            "p50_ms": http_info.get("p50_ms", http_info["latency_ms"]),
+            "p95_ms": http_info.get("p95_ms", http_info["latency_ms"]),
+            "jitter_ratio": http_info.get("jitter_ratio", 1.0),
             "keep_alive": headers_lower.get("connection", "keep-alive"),
             "server": server_hdr or "Hidden",
             "headers": http_info["headers"],
             "error": http_info["error"],
         },
         "network": net_info,
+        "architecture": arch,
         "security": {
             "score": final_score,
             "grade": grade,
@@ -689,6 +885,8 @@ spec:
         },
         "findings": findings,
         "github_repo": repo_meta,
-        "concurrency_projection": concurrency_curve,
+        "safe_capacity_users": concurrency["safe_capacity_users"],
+        "saturation_reason": concurrency["saturation_reason"],
+        "concurrency_projection": concurrency["points"],
         "remediation_patch": full_patch,
     })
