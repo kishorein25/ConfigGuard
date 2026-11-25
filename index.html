@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ConfigGuard OS - Infrastructure Audit Dashboard</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Chart.js for Concurrency Stress Test -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              400: '#818cf8',
+              500: '#6366f1',
+              600: '#4f46e5',
+              accent: '#6c62ed',
+              cyan: '#38bdf8',
+            },
+            surface: {
+              base: '#0c0e16',
+              card: '#11131b',
+              elevated: '#191b24',
+              border: 'rgba(255, 255, 255, 0.08)',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0c0e16;
+      color: #e2e8f0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .ambient-glow {
+      background: radial-gradient(circle at 50% 0%, rgba(108, 98, 237, 0.15) 0%, rgba(12, 14, 22, 0) 70%);
+    }
+    .glass-card {
+      background: rgba(17, 19, 27, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .glass-card:hover {
+      border-color: rgba(108, 98, 237, 0.3);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col bg-[#0c0e16] text-slate-200 antialiased selection:bg-brand-500/30 selection:text-brand-400">
+
+  <!-- TOP APP BAR -->
+  <header class="h-16 border-b border-white/10 bg-[#0c0e16]/80 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-50">
+    <div class="flex items-center space-x-6">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-accent to-brand-cyan flex items-center justify-center shadow-lg shadow-brand-500/20">
+          <i data-lucide="shield-check" class="w-5 h-5 text-white"></i>
+        </div>
+        <div class="flex items-center space-x-2">
+          <span class="font-bold text-lg text-white tracking-tight">ConfigGuard OS</span>
+          <span class="text-xs px-2 py-0.5 rounded-full font-mono bg-white/5 border border-white/10 text-slate-400">v4.2</span>
+        </div>
+      </div>
+      <div class="hidden sm:block h-5 w-px bg-white/10"></div>
+      <div class="hidden sm:flex items-center space-x-2 text-xs font-medium px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span>Google SRE Protocol Active</span>
+      </div>
+    </div>
+
+    <div class="flex items-center space-x-4">
+      <button onclick="openGithubModal()" class="flex items-center space-x-2 px-3.5 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-200 transition-all cursor-pointer">
+        <i data-lucide="github" class="w-4 h-4"></i>
+        <span>Connect GitHub</span>
+      </button>
+      <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-semibold text-white border border-white/20">
+        <i data-lucide="user" class="w-4 h-4"></i>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTAINER WITH SIDEBAR -->
+  <div class="flex-1 flex overflow-hidden">
+    <!-- LEFT SIDEBAR -->
+    <aside class="w-64 border-r border-white/10 bg-[#0e1017] p-5 flex flex-col justify-between hidden md:flex">
+      <div class="space-y-6">
+        <div>
+          <span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-3">Platform Navigation</span>
+          <nav class="space-y-1" id="sidebarNav">
+            <button onclick="navigateView('overview', this)" class="nav-item w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl bg-brand-accent/20 text-brand-400 border border-brand-accent/30 text-sm font-semibold transition-all text-left">
+              <i data-lucide="layout-grid" class="w-4 h-4"></i>
+              <span>Cluster Overview</span>
+            </button>
+            <button onclick="navigateView('stress', this)" class="nav-item w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 text-sm font-medium transition-all text-left">
+              <i data-lucide="cpu" class="w-4 h-4"></i>
+              <span>Load Guardrails (5K)</span>
+            </button>
+            <button onclick="navigateView('patch', this)" class="nav-item w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 text-sm font-medium transition-all text-left">
+              <i data-lucide="git-pull-request" class="w-4 h-4"></i>
+              <span>Drift & Patching</span>
+            </button>
+            <button onclick="navigateView('diagnostics', this)" class="nav-item w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 text-sm font-medium transition-all text-left">
+              <i data-lucide="alert-triangle" class="w-4 h-4"></i>
+              <span>Incident Matrix</span>
+            </button>
+            <button onclick="navigateView('headers', this)" class="nav-item w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 text-sm font-medium transition-all text-left">
+              <i data-lucide="shield" class="w-4 h-4"></i>
+              <span>Live Headers & Report</span>
+            </button>
+          </nav>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer State -->
+      <div class="p-3.5 rounded-xl bg-surface-card border border-white/5 space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400">Enforcement State</span>
+          <span id="sidebarEnforcement" class="px-2 py-0.5 rounded bg-brand-accent/20 text-brand-400 font-mono text-[10px]">Strict SRE</span>
+        </div>
+        <div class="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+          <div id="sidebarHealthBar" class="bg-brand-accent h-1.5 rounded-full w-0 transition-all duration-500"></div>
+        </div>
+        <div class="flex justify-between items-center text-[11px] text-slate-400">
+          <span>Target Posture</span>
+          <span id="sidebarHealthText" class="font-mono text-slate-400 font-medium">--</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN DASHBOARD CONTENT -->
+    <main class="flex-1 overflow-y-auto ambient-glow p-6 md:p-8 space-y-8">
+      
+      <!-- HERO TARGET SECTION -->
+      <div class="max-w-6xl mx-auto space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div class="flex items-center space-x-2 text-xs font-mono text-slate-400">
+            <span class="w-1.5 h-1.5 rounded-full bg-brand-accent"></span>
+            <span>INFRASTRUCTURE RESILIENCE // LIVE TELEMETRY</span>
+          </div>
+          <div class="flex items-center space-x-2 text-xs font-mono text-slate-400 bg-white/5 px-3 py-1 rounded-md border border-white/5">
+            <span>Active Target:</span>
+            <span id="activeTargetLabel" class="text-slate-200">None selected</span>
+            <span id="activeTargetBadge" class="px-1.5 py-0.5 rounded bg-white/10 text-slate-400 text-[10px]">STANDBY</span>
+          </div>
+        </div>
+
+        <h1 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">
+          Autonomous AI Infrastructure & Target Audit
+        </h1>
+        <p class="text-slate-400 text-sm max-w-3xl leading-relaxed">
+          Enter any live website URL or public GitHub repository to run real-time DNS/TLS handshakes, HTTP header verification, configuration drift checks, and 1,000 to 5,000 user concurrency modeling.
+        </p>
+
+        <!-- Audit URL Input Bar -->
+        <form id="auditForm" onsubmit="handleAuditSubmit(event)" class="glass-card p-2 rounded-2xl flex flex-col sm:flex-row items-center gap-3 border border-white/10 shadow-2xl">
+          <div class="flex items-center space-x-3 px-3 w-full">
+            <i data-lucide="globe" class="w-5 h-5 text-slate-400 shrink-0"></i>
+            <input 
+              id="urlInput"
+              type="text" 
+              value="" 
+              placeholder="Enter any target URL or GitHub repo (e.g. https://your-website.com or https://github.com/user/repo)" 
+              class="w-full bg-transparent border-0 text-sm font-mono text-slate-200 focus:outline-none placeholder:text-slate-500 py-1.5"
+              required
+            />
+          </div>
+          <button id="runAuditBtn" type="submit" class="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-brand-accent to-indigo-600 hover:from-brand-accent/90 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-brand-500/25 flex items-center justify-center space-x-2 transition-all shrink-0 cursor-pointer">
+            <i data-lucide="zap" class="w-4 h-4"></i>
+            <span id="runAuditBtnText">Run Audit</span>
+          </button>
+        </form>
+
+        <!-- Error Banner -->
+        <div id="errorAlert" class="hidden p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs font-mono"></div>
+      </div>
+
+      <!-- 4 KPI TELEMETRY STAT CARDS -->
+      <div class="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        
+        <!-- CARD 1: Latency -->
+        <div class="glass-card p-5 rounded-2xl space-y-4">
+          <div class="flex items-center justify-between text-xs text-slate-400 font-semibold uppercase tracking-wider">
+            <span>Endpoint Latency</span>
+            <div class="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center text-slate-400">
+              <i data-lucide="gauge" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="flex items-baseline space-x-2">
+              <span id="kpiLatencyVal" class="text-3xl font-extrabold text-white font-mono">--</span>
+              <span class="text-xs font-mono text-slate-400">ms</span>
+            </div>
+            <div id="kpiLatencyPill" class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-400 text-xs font-medium">
+              <span>Awaiting live probe</span>
+            </div>
+          </div>
+          <div class="pt-2 border-t border-white/5 flex items-center justify-between text-xs font-mono text-slate-400">
+            <span>Resolved IP:</span>
+            <span id="kpiResolvedIp" class="text-slate-300">--</span>
+          </div>
+        </div>
+
+        <!-- CARD 2: HTTP Status -->
+        <div class="glass-card p-5 rounded-2xl space-y-4">
+          <div class="flex items-center justify-between text-xs text-slate-400 font-semibold uppercase tracking-wider">
+            <span>HTTP Status</span>
+            <div id="kpiStatusIconWrap" class="w-7 h-7 rounded-lg bg-white/5 text-slate-400 flex items-center justify-center">
+              <i data-lucide="activity" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="flex items-baseline space-x-2">
+              <span id="kpiStatusCode" class="text-3xl font-extrabold text-white font-mono">--</span>
+              <span id="kpiStatusLabel" class="text-xs font-mono text-slate-400 font-bold"></span>
+            </div>
+            <div id="kpiStatusPill" class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-400 text-xs font-medium">
+              <span>Standby</span>
+            </div>
+          </div>
+          <div class="pt-2 border-t border-white/5 grid grid-cols-3 text-[11px] text-slate-400 font-mono">
+            <div>DNS: <span id="kpiDnsMs" class="text-slate-200">--</span></div>
+            <div>TCP: <span id="kpiTcpMs" class="text-slate-200">--</span></div>
+            <div>TLS: <span id="kpiTlsMs" class="text-slate-200">--</span></div>
+          </div>
+        </div>
+
+        <!-- CARD 3: Security Posture -->
+        <div class="glass-card p-5 rounded-2xl space-y-4">
+          <div class="flex items-center justify-between text-xs text-slate-400 font-semibold uppercase tracking-wider">
+            <span>Security Posture</span>
+            <div class="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center">
+              <i data-lucide="shield-alert" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="flex items-center justify-between">
+            <div class="space-y-1">
+              <div class="flex items-baseline space-x-1">
+                <span id="kpiScoreVal" class="text-3xl font-extrabold text-white font-mono">--</span>
+                <span class="text-xs text-slate-400 font-mono">/100</span>
+              </div>
+              <span id="kpiScoreGrade" class="text-xs text-slate-400 font-semibold block">Not evaluated</span>
+            </div>
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                <path class="text-white/10" stroke-width="3.5" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                <path id="kpiScoreRing" class="text-brand-accent transition-all duration-700" stroke-dasharray="0, 100" stroke-width="3.5" stroke-linecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+              </svg>
+              <span id="kpiScorePct" class="absolute text-[10px] font-mono font-bold text-white">--</span>
+            </div>
+          </div>
+          <div class="pt-2 border-t border-white/5 text-[11px] text-slate-400 flex justify-between">
+            <span>Header & SRE Checks:</span>
+            <span id="kpiChecksPassed" class="font-mono text-slate-200 font-semibold">-- / --</span>
+          </div>
+        </div>
+
+        <!-- CARD 4: SSL/TLS -->
+        <div class="glass-card p-5 rounded-2xl space-y-4">
+          <div class="flex items-center justify-between text-xs text-slate-400 font-semibold uppercase tracking-wider">
+            <span>SSL/TLS Ingress</span>
+            <div class="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center">
+              <i data-lucide="lock" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="flex items-center space-x-2">
+              <span id="kpiTlsVer" class="text-2xl font-extrabold text-white font-mono">--</span>
+              <span id="kpiTlsBadge" class="hidden px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[10px] font-mono font-semibold"></span>
+            </div>
+            <p id="kpiCipher" class="text-xs font-mono text-slate-400 truncate">--</p>
+          </div>
+          <div class="pt-2 border-t border-white/5 flex justify-between text-[11px] font-mono text-slate-400">
+            <span id="kpiIssuer" class="truncate max-w-[130px]">Issuer: --</span>
+            <span id="kpiSslDays" class="text-slate-300">Valid: --</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TABBED DEEP DIVE AREA -->
+      <div class="max-w-6xl mx-auto space-y-4">
+        
+        <!-- Tab Navigation Bar -->
+        <div class="flex flex-wrap items-center justify-between border-b border-white/10 pb-3 gap-3">
+          <div class="flex flex-wrap gap-2">
+            <button id="tabBtn-diagnostics" onclick="switchTab('diagnostics')" class="tab-btn flex items-center space-x-2 px-4 py-2 rounded-xl bg-brand-accent/20 border border-brand-accent/40 text-brand-400 text-xs font-semibold cursor-pointer">
+              <i data-lucide="bug" class="w-4 h-4"></i>
+              <span>Vulnerability Diagnostics</span>
+              <span id="tabFindingsCount" class="px-1.5 py-0.5 rounded-full bg-brand-accent text-white text-[10px]">0</span>
+            </button>
+            <button id="tabBtn-stress" onclick="switchTab('stress')" class="tab-btn flex items-center space-x-2 px-4 py-2 rounded-xl hover:bg-white/5 text-slate-400 text-xs font-medium transition-all cursor-pointer">
+              <i data-lucide="activity" class="w-4 h-4"></i>
+              <span>Concurrency Stress Test</span>
+              <span class="text-[10px] font-mono text-slate-400">1K - 5K Users</span>
+            </button>
+            <button id="tabBtn-patch" onclick="switchTab('patch')" class="tab-btn flex items-center space-x-2 px-4 py-2 rounded-xl hover:bg-white/5 text-slate-400 text-xs font-medium transition-all cursor-pointer">
+              <i data-lucide="wrench" class="w-4 h-4"></i>
+              <span>Automated Hardening Patch</span>
+            </button>
+            <button id="tabBtn-headers" onclick="switchTab('headers')" class="tab-btn flex items-center space-x-2 px-4 py-2 rounded-xl hover:bg-white/5 text-slate-400 text-xs font-medium transition-all cursor-pointer">
+              <i data-lucide="file-text" class="w-4 h-4"></i>
+              <span>Raw Headers & Export</span>
+            </button>
+          </div>
+
+          <div class="hidden lg:flex items-center space-x-2 text-xs text-slate-400">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Live Engine Ready</span>
+          </div>
+        </div>
+
+        <!-- TAB 1: DIAGNOSTICS -->
+        <div id="panel-diagnostics" class="tab-panel space-y-4">
+          <div class="flex items-center justify-between text-xs text-slate-400 pt-2">
+            <span class="font-bold tracking-wider uppercase text-slate-300">REAL-TIME SRE & SECURITY FINDINGS</span>
+            <span id="scanSummaryMeta" class="font-mono">Enter a URL above to begin inspection</span>
+          </div>
+
+          <!-- GitHub Config Detection Banner -->
+          <div id="githubFilesBanner" class="hidden glass-card p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="flex items-center space-x-2 text-indigo-300 font-semibold">
+              <i data-lucide="git-branch" class="w-4 h-4"></i>
+              <span id="githubBannerTitle">GitHub Config Inspection</span>
+            </div>
+            <div id="githubFilesList" class="flex flex-wrap gap-1.5 font-mono"></div>
+          </div>
+
+          <!-- Findings Container -->
+          <div id="findingsContainer" class="space-y-3">
+            <div class="glass-card p-8 rounded-2xl text-center space-y-3 border border-dashed border-white/10">
+              <div class="w-12 h-12 mx-auto rounded-2xl bg-brand-accent/10 border border-brand-accent/20 flex items-center justify-center text-brand-400">
+                <i data-lucide="radar" class="w-6 h-6"></i>
+              </div>
+              <h3 class="text-base font-bold text-white">No Live Target Audited Yet</h3>
+              <p class="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                Paste any live website URL or GitHub repository URL into the audit bar above and click <strong>Run Audit</strong>. ConfigGuard will measure real DNS/TLS/HTTP latency, inspect security headers, and detect deployment vulnerabilities.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: CONCURRENCY STRESS TEST (1,000 -> 5,000 USERS) -->
+        <div id="panel-stress" class="tab-panel hidden space-y-5">
+          <div class="glass-card p-6 rounded-2xl space-y-6">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h2 class="text-base font-bold text-white">Concurrency Scaling Model (1,000 to 5,000 Users)</h2>
+                <p class="text-xs text-slate-400 mt-1">
+                  Projects queue saturation and response latency from the live measured TTFB baseline under 1,000–5,000 concurrent users before vs. after ConfigGuard HPA autoscaling.
+                </p>
+              </div>
+              <div class="flex items-center space-x-3 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
+                <span class="text-xs text-slate-400 font-mono">Target Load:</span>
+                <input id="userSlider" type="range" min="1000" max="5000" step="500" value="5000" oninput="updateStressChart()" class="accent-brand-accent cursor-pointer" />
+                <span id="userSliderLabel" class="text-sm font-mono font-bold text-brand-400 min-w-[85px] text-right">5,000 Users</span>
+              </div>
+            </div>
+
+            <div class="h-80 w-full">
+              <canvas id="stressChart"></canvas>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-white/5">
+              <div class="p-4 rounded-xl bg-white/[0.02] border border-white/5">
+                <span class="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">Target Concurrency</span>
+                <div id="stressTargetUsers" class="text-2xl font-extrabold font-mono text-white mt-1">--</div>
+              </div>
+              <div class="p-4 rounded-xl bg-red-500/5 border border-red-500/20">
+                <span class="text-[11px] uppercase tracking-wider text-red-400 font-semibold">Unhardened Projected Latency</span>
+                <div id="stressUnhardenedVal" class="text-2xl font-extrabold font-mono text-red-400 mt-1">--</div>
+              </div>
+              <div class="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                <span class="text-[11px] uppercase tracking-wider text-emerald-400 font-semibold">Hardened HPA Latency</span>
+                <div id="stressHardenedVal" class="text-2xl font-extrabold font-mono text-emerald-400 mt-1">--</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: AUTOMATED HARDENING PATCH -->
+        <div id="panel-patch" class="tab-panel hidden space-y-4">
+          <div class="glass-card p-6 rounded-2xl space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 class="text-base font-bold text-white">Generated Production Hardening Patch</h2>
+                <p class="text-xs text-slate-400">Tailored specifically to fix missing headers, port mismatches, and autoscaling boundaries detected for your target.</p>
+              </div>
+              <div class="flex space-x-2">
+                <button onclick="copyPatch()" class="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-200 border border-white/10 flex items-center space-x-1.5 cursor-pointer">
+                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                  <span id="copyPatchLabel">Copy Patch</span>
+                </button>
+                <button onclick="downloadPatch()" class="px-4 py-2 rounded-xl bg-brand-accent hover:bg-brand-600 text-xs font-semibold text-white flex items-center space-x-1.5 cursor-pointer">
+                  <i data-lucide="download" class="w-3.5 h-3.5"></i>
+                  <span>Download .yaml</span>
+                </button>
+              </div>
+            </div>
+            <pre id="patchCodeBlock" class="p-4 rounded-xl bg-[#07090f] border border-white/10 text-xs font-mono text-emerald-300 overflow-x-auto leading-relaxed"># Run an audit on any URL to generate a custom hardening patch.</pre>
+          </div>
+        </div>
+
+        <!-- TAB 4: RAW HEADERS & EXPORT -->
+        <div id="panel-headers" class="tab-panel hidden space-y-4">
+          <div class="glass-card p-6 rounded-2xl space-y-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="text-base font-bold text-white">Live HTTP Response Headers & Audit Export</h2>
+                <p class="text-xs text-slate-400">Exact raw HTTP headers returned by the target server.</p>
+              </div>
+              <button onclick="downloadReport()" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 flex items-center space-x-2 cursor-pointer">
+                <i data-lucide="file-down" class="w-4 h-4"></i>
+                <span>Export Audit Certificate (.md)</span>
+              </button>
+            </div>
+            <pre id="rawHeadersBlock" class="p-4 rounded-xl bg-[#07090f] border border-white/10 text-xs font-mono text-indigo-300 overflow-x-auto max-h-96">{}</pre>
+          </div>
+        </div>
+
+      </div>
+
+    </main>
+  </div>
+
+  <!-- CONNECT GITHUB MODAL -->
+  <div id="githubModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="glass-card bg-[#11131b] border border-white/15 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="github" class="w-5 h-5 text-white"></i>
+          <h3 class="text-base font-bold text-white">Inspect Public GitHub Repositories</h3>
+        </div>
+        <button onclick="closeGithubModal()" class="text-slate-400 hover:text-white cursor-pointer">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <p class="text-xs text-slate-400">Enter a GitHub username to fetch public repositories and audit their Kubernetes/Docker/env configurations directly.</p>
+      <div class="flex space-x-2">
+        <input id="ghUserInput" type="text" placeholder="GitHub username (e.g. kishorein25)" class="flex-1 px-3 py-2 rounded-xl bg-[#07090f] border border-white/10 text-xs font-mono text-white focus:outline-none focus:border-brand-accent" />
+        <button onclick="fetchGithubRepos()" class="px-4 py-2 rounded-xl bg-brand-accent hover:bg-brand-600 text-xs font-semibold text-white cursor-pointer">Fetch Repos</button>
+      </div>
+      <div id="ghRepoList" class="max-h-64 overflow-y-auto space-y-2 text-xs"></div>
+    </div>
+  </div>
+
+  <!-- PERSISTENT FOOTER BAR -->
+  <footer class="h-10 border-t border-white/10 bg-[#0a0c13] px-6 flex items-center justify-between text-xs text-slate-400 font-mono">
+    <div class="flex items-center space-x-4">
+      <div class="flex items-center space-x-1.5">
+        <i data-lucide="zap" class="w-3.5 h-3.5 text-brand-400"></i>
+        <span>Audit Roundtrip: <strong id="footerLatency" class="text-slate-200 font-normal">--</strong></span>
+      </div>
+      <span class="hidden sm:inline">•</span>
+      <div class="hidden sm:flex items-center space-x-1.5">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i>
+        <span>SRE Outage Prevention Gate</span>
+      </div>
+    </div>
+    <div>
+      ConfigGuard OS v4.2
+    </div>
+  </footer>
+
+  <script>
+    lucide.createIcons();
+
+    let lastAuditData = null;
+    let stressChartInstance = null;
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+      document.getElementById(`panel-${tabName}`).classList.remove('hidden');
+
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('bg-brand-accent/20', 'border', 'border-brand-accent/40', 'text-brand-400', 'font-semibold');
+        btn.classList.add('text-slate-400', 'font-medium');
+      });
+
+      const activeBtn = document.getElementById(`tabBtn-${tabName}`);
+      activeBtn.classList.remove('text-slate-400', 'font-medium');
+      activeBtn.classList.add('bg-brand-accent/20', 'border', 'border-brand-accent/40', 'text-brand-400', 'font-semibold');
+
+      if (tabName === 'stress' && lastAuditData) {
+        updateStressChart();
+      }
+    }
+
+    function navigateView(view, btnEl) {
+      document.querySelectorAll('.nav-item').forEach(el => {
+        el.classList.remove('bg-brand-accent/20', 'text-brand-400', 'border', 'border-brand-accent/30', 'font-semibold');
+        el.classList.add('text-slate-400', 'font-medium');
+      });
+      btnEl.classList.remove('text-slate-400', 'font-medium');
+      btnEl.classList.add('bg-brand-accent/20', 'text-brand-400', 'border', 'border-brand-accent/30', 'font-semibold');
+
+      if (view === 'overview' || view === 'diagnostics') switchTab('diagnostics');
+      else if (view === 'stress') switchTab('stress');
+      else if (view === 'patch') switchTab('patch');
+      else if (view === 'headers') switchTab('headers');
+    }
+
+    async function handleAuditSubmit(e) {
+      e.preventDefault();
+      const url = document.getElementById('urlInput').value.trim();
+      if (!url) return;
+
+      const btn = document.getElementById('runAuditBtn');
+      const btnText = document.getElementById('runAuditBtnText');
+      const errBox = document.getElementById('errorAlert');
+      errBox.classList.add('hidden');
+
+      btn.disabled = true;
+      btnText.textContent = 'Auditing...';
+
+      try {
+        const res = await fetch('/api/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, target_users: 5000 })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Audit request failed');
+        }
+        lastAuditData = data;
+        renderAuditResults(data);
+      } catch (err) {
+        errBox.textContent = `Audit Error: ${err.message}`;
+        errBox.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btnText.textContent = 'Run Audit';
+      }
+    }
+
+    function renderAuditResults(data) {
+      // Header Target Meta
+      document.getElementById('activeTargetLabel').textContent = data.url;
+      const badge = document.getElementById('activeTargetBadge');
+      badge.textContent = `AUDITED AT ${data.audited_at}`;
+      badge.className = 'px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px]';
+
+      // KPI 1: Latency
+      const lat = data.http.latency_ms;
+      document.getElementById('kpiLatencyVal').textContent = lat;
+      const latPill = document.getElementById('kpiLatencyPill');
+      if (!data.http.alive) {
+        latPill.className = 'inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium';
+        latPill.innerHTML = '<span>Connection Failed</span>';
+      } else if (lat < 500) {
+        latPill.className = 'inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium';
+        latPill.innerHTML = `<span>${(lat / 1000).toFixed(3)}s Sub-second</span>`;
+      } else {
+        latPill.className = 'inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium';
+        latPill.innerHTML = `<span>${(lat / 1000).toFixed(2)}s Elevated</span>`;
+      }
+      document.getElementById('kpiResolvedIp').textContent = data.network.resolved_ip || 'Unresolved';
+
+      // KPI 2: HTTP Status
+      document.getElementById('kpiStatusCode').textContent = data.http.status_code || 'ERR';
+      document.getElementById('kpiStatusLabel').textContent = data.http.alive && data.http.status_code < 400 ? 'OK' : 'WARN';
+      const statusPill = document.getElementById('kpiStatusPill');
+      if (data.http.alive && data.http.status_code < 400) {
+        statusPill.className = 'inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium';
+        statusPill.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span><span>Live • ${data.http.keep_alive}</span>`;
+      } else {
+        statusPill.className = 'inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium';
+        statusPill.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-red-400"></span><span>${data.http.error || 'Error'}</span>`;
+      }
+      document.getElementById('kpiDnsMs').textContent = `${data.network.dns_ms}ms`;
+      document.getElementById('kpiTcpMs').textContent = `${data.network.tcp_ms}ms`;
+      document.getElementById('kpiTlsMs').textContent = `${data.network.tls_ms}ms`;
+
+      // KPI 3: Security Score
+      const score = data.security.score;
+      document.getElementById('kpiScoreVal').textContent = score;
+      document.getElementById('kpiScoreGrade').textContent = data.security.grade;
+      document.getElementById('kpiScorePct').textContent = `${score}%`;
+      document.getElementById('kpiScoreRing').setAttribute('stroke-dasharray', `${score}, 100`);
+      document.getElementById('kpiChecksPassed').textContent = `${data.security.passed_checks} / ${data.security.total_checks} Passed`;
+
+      // Sidebar health sync
+      document.getElementById('sidebarHealthBar').style.width = `${score}%`;
+      document.getElementById('sidebarHealthText').textContent = `${score}%`;
+      document.getElementById('sidebarHealthText').className = score >= 80 ? 'font-mono text-emerald-400 font-medium' : 'font-mono text-amber-400 font-medium';
+
+      // KPI 4: SSL/TLS
+      document.getElementById('kpiTlsVer').textContent = data.network.tls_version;
+      const tlsBadge = document.getElementById('kpiTlsBadge');
+      if (data.network.tls_version.includes('TLS')) {
+        tlsBadge.textContent = 'ENCRYPTED';
+        tlsBadge.classList.remove('hidden');
+      } else {
+        tlsBadge.classList.add('hidden');
+      }
+      document.getElementById('kpiCipher').textContent = data.network.cipher;
+      document.getElementById('kpiIssuer').textContent = `Issuer: ${data.network.ssl_issuer || 'N/A'}`;
+      document.getElementById('kpiSslDays').textContent = data.network.ssl_days_remaining !== null ? `Valid: ${data.network.ssl_days_remaining}d` : 'Valid: --';
+
+      // Findings & Tab counter
+      document.getElementById('tabFindingsCount').textContent = data.findings.length;
+      document.getElementById('scanSummaryMeta').textContent = `Completed live check in ${data.audit_duration_ms}ms • ${data.findings.length} finding(s)`;
+      document.getElementById('footerLatency').textContent = `${data.audit_duration_ms}ms`;
+
+      // GitHub Banner
+      const ghBanner = document.getElementById('githubFilesBanner');
+      if (data.github_repo && data.github_repo.detected) {
+        ghBanner.classList.remove('hidden');
+        document.getElementById('githubBannerTitle').textContent = `Inspected GitHub Repo: ${data.github_repo.owner}/${data.github_repo.repo}`;
+        const listEl = document.getElementById('githubFilesList');
+        listEl.innerHTML = data.github_repo.config_files.length
+          ? data.github_repo.config_files.map(f => `<span class="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${escapeHtml(f)}</span>`).join('')
+          : '<span class="text-slate-400">No deployment YAML/env files found in root</span>';
+      } else {
+        ghBanner.classList.add('hidden');
+      }
+
+      // Render Findings
+      const container = document.getElementById('findingsContainer');
+      if (data.findings.length === 0) {
+        container.innerHTML = `
+          <div class="glass-card p-6 rounded-2xl border-l-4 border-l-emerald-500">
+            <h3 class="text-sm font-bold text-emerald-400">All Inspected SRE & Security Checks Passed</h3>
+            <p class="text-xs text-slate-400 mt-1">No missing HTTP security headers or deployment configuration vulnerabilities were detected for ${escapeHtml(data.url)}.</p>
+          </div>`;
+      } else {
+        container.innerHTML = data.findings.map(f => {
+          const borderCol = f.severity === 'CRITICAL' ? 'border-l-red-500' : (f.severity === 'HIGH' ? 'border-l-amber-500' : 'border-l-blue-500');
+          const badgeCol = f.severity === 'CRITICAL' ? 'bg-red-500/20 text-red-400' : (f.severity === 'HIGH' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400');
+          return `
+            <div class="glass-card p-5 rounded-2xl border-l-4 ${borderCol} flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div class="space-y-2 max-w-3xl">
+                <div class="flex flex-wrap items-center gap-2.5">
+                  <span class="px-2 py-0.5 rounded ${badgeCol} font-mono text-xs font-bold">${escapeHtml(f.severity)}</span>
+                  <span class="text-xs font-mono text-slate-400">${escapeHtml(f.code)}</span>
+                  <h2 class="text-sm font-bold text-white">${escapeHtml(f.title)}</h2>
+                </div>
+                <p class="text-xs text-slate-400"><span class="text-slate-300 font-semibold">Root Cause:</span> ${escapeHtml(f.root_cause)}</p>
+                <p class="text-xs text-slate-400"><span class="text-slate-300 font-semibold">Impact:</span> ${escapeHtml(f.impact)}</p>
+              </div>
+              <div class="flex md:flex-col items-end justify-between gap-2 shrink-0">
+                <button onclick="switchTab('patch')" class="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-200 border border-white/10 flex items-center space-x-1.5 transition-all cursor-pointer">
+                  <i data-lucide="file-code" class="w-3.5 h-3.5"></i>
+                  <span>Inspect Patch</span>
+                </button>
+                <span class="text-[11px] font-mono text-slate-400">Target: ${escapeHtml(f.target)}</span>
+              </div>
+            </div>`;
+        }).join('');
+      }
+
+      // Patch & Raw Headers
+      document.getElementById('patchCodeBlock').textContent = data.remediation_patch;
+      document.getElementById('rawHeadersBlock').textContent = JSON.stringify(data.http.headers, null, 2);
+
+      lucide.createIcons();
+      updateStressChart();
+    }
+
+    function updateStressChart() {
+      const maxUsers = parseInt(document.getElementById('userSlider').value, 10);
+      document.getElementById('userSliderLabel').textContent = `${maxUsers.toLocaleString()} Users`;
+
+      if (!lastAuditData || !lastAuditData.concurrency_projection) return;
+
+      const filtered = lastAuditData.concurrency_projection.filter(pt => pt.users <= maxUsers);
+      const labels = filtered.map(pt => `${pt.users.toLocaleString()} users`);
+      const unhardened = filtered.map(pt => pt.unhardened_ms);
+      const hardened = filtered.map(pt => pt.hardened_ms);
+
+      const lastPt = filtered[filtered.length - 1];
+      document.getElementById('stressTargetUsers').textContent = `${maxUsers.toLocaleString()} Users`;
+      document.getElementById('stressUnhardenedVal').textContent = `${Math.round(lastPt.unhardened_ms)} ms (${lastPt.unhardened_error_pct}% err)`;
+      document.getElementById('stressHardenedVal').textContent = `${Math.round(lastPt.hardened_ms)} ms (${lastPt.active_replicas} pods)`;
+
+      const ctx = document.getElementById('stressChart').getContext('2d');
+      if (stressChartInstance) {
+        stressChartInstance.destroy();
+      }
+      stressChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Unhardened Baseline (ms)',
+              data: unhardened,
+              borderColor: '#ef4444',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              borderDash: [6, 4],
+              tension: 0.35,
+              borderWidth: 2.5
+            },
+            {
+              label: 'ConfigGuard Hardened + HPA (ms)',
+              data: hardened,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.12)',
+              tension: 0.35,
+              borderWidth: 3
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: '#cbd5e1', font: { family: 'Plus Jakarta Sans' } } }
+          },
+          scales: {
+            x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Projected Latency (ms)', color: '#94a3b8' } }
+          }
+        }
+      });
+    }
+
+    function copyPatch() {
+      const text = document.getElementById('patchCodeBlock').textContent;
+      navigator.clipboard.writeText(text);
+      document.getElementById('copyPatchLabel').textContent = 'Copied!';
+      setTimeout(() => { document.getElementById('copyPatchLabel').textContent = 'Copy Patch'; }, 2000);
+    }
+
+    function downloadPatch() {
+      const text = document.getElementById('patchCodeBlock').textContent;
+      triggerDownload(text, 'ConfigGuard-Hardening-Patch.yaml', 'text/yaml');
+    }
+
+    function downloadReport() {
+      if (!lastAuditData) return;
+      const lines = [
+        `# ConfigGuard OS - Live Audit Certificate`,
+        `- **Target URL:** ${lastAuditData.url}`,
+        `- **Audited At:** ${lastAuditData.audited_at}`,
+        `- **HTTP Status:** ${lastAuditData.http.status_code}`,
+        `- **Latency:** ${lastAuditData.http.latency_ms} ms`,
+        `- **TLS Protocol:** ${lastAuditData.network.tls_version} (${lastAuditData.network.cipher})`,
+        `- **Security Posture Score:** ${lastAuditData.security.score}/100 (${lastAuditData.security.grade})`,
+        `\n## Findings (${lastAuditData.findings.length})`,
+        ...lastAuditData.findings.map((f, i) => `### ${i + 1}. [${f.severity}] ${f.title}\n- **Root Cause:** ${f.root_cause}\n- **Impact:** ${f.impact}\n- **Remediation:** ${f.patch_hint}\n`)
+      ];
+      triggerDownload(lines.join('\n'), 'ConfigGuard-Audit-Certificate.md', 'text/markdown');
+    }
+
+    function triggerDownload(content, filename, mime) {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function openGithubModal() {
+      document.getElementById('githubModal').classList.remove('hidden');
+    }
+
+    function closeGithubModal() {
+      document.getElementById('githubModal').classList.add('hidden');
+    }
+
+    async function fetchGithubRepos() {
+      const user = document.getElementById('ghUserInput').value.trim();
+      const list = document.getElementById('ghRepoList');
+      if (!user) return;
+      list.innerHTML = '<div class="text-slate-400 font-mono">Fetching repositories...</div>';
+      try {
+        const res = await fetch(`/api/github/${encodeURIComponent(user)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to fetch');
+        list.innerHTML = data.repos.map(r => `
+          <button onclick="selectRepoForAudit('${escapeHtml(r.url)}')" class="w-full text-left p-3 rounded-xl bg-white/5 hover:bg-brand-accent/20 border border-white/10 transition-all cursor-pointer">
+            <div class="flex justify-between items-center">
+              <span class="font-bold text-white">${escapeHtml(r.name)}</span>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-white/10 text-slate-300">${escapeHtml(r.language)}</span>
+            </div>
+            <p class="text-[11px] text-slate-400 truncate mt-1">${escapeHtml(r.description)}</p>
+          </button>
+        `).join('');
+      } catch (err) {
+        list.innerHTML = `<div class="text-red-400 font-mono">Error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function selectRepoForAudit(repoUrl) {
+      closeGithubModal();
+      document.getElementById('urlInput').value = repoUrl;
+      document.getElementById('auditForm').dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+  </script>
+</body>
+</html>
